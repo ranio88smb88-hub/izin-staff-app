@@ -1,13 +1,33 @@
-// Your web app's Firebase configuration
-  const firebaseConfig = {
-    apiKey: "AIzaSyBEh3qGIz4ajcZrr_w1xFUXgEHji6L45tQ",
-    authDomain: "izin-staff-app.firebaseapp.com",
-    projectId: "izin-staff-app",
-    storageBucket: "izin-staff-app.firebasestorage.app",
-    messagingSenderId: "129632445304",
-    appId: "1:129632445304:web:eff78037412a8c04305e8d"
-  };
-
-  // Initialize Firebase
-  const app = initializeApp(firebaseConfig);
-</script>
+<!DOCTYPE html>
+<html>
+<head>
+    <title>APP IZIN STAFF - FIXED</title>
+    <style>
+        body { font-family: Arial; text-align: center; padding: 50px; }
+        h1 { color: green; }
+        button { background: blue; color: white; padding: 15px 30px; font-size: 18px; border: none; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <h1>✅ APLIKASI TRACKING IZIN STAFF</h1>
+    <p>Firebase Hosting Berhasil!</p>
+    <button onclick="alert('App Siap Digunakan!')">KLIK UNTUK TEST</button>
+    <p id="status">Loading Firebase...</p>
+    
+    <script>
+        // Firebase config Anda
+        const firebaseConfig = {
+            apiKey: "AIzaSyBEh3qGIZ4ajcZrr_w1xFXgEHj6L45tQ",
+            authDomain: "izin-staff-app.firebaseapp.com",
+            projectId: "izin-staff-app",
+            storageBucket: "izin-staff-app.firebasestorage.app",
+            messagingSenderId: "129632445304",
+            appId: "1:129632445304:web:eff78037412a8c04305e8d"
+        };
+        
+        // Tampilkan status
+        document.getElementById('status').textContent = "Firebase Config Loaded! App Ready.";
+        console.log("🔥 Firebase Config:", firebaseConfig);
+    </script>
+</body>
+</html>
