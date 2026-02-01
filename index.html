@@ -248,6 +248,12 @@
             border: 1px solid #FFEEBA;
         }
 
+        .alert-success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
         /* Timer */
         .timer {
             font-family: 'Courier New', monospace;
@@ -277,6 +283,22 @@
 
         .jobdesk-busy {
             border-left: 5px solid #F44336;
+        }
+
+        /* Progress Bar */
+        .progress-bar {
+            background: rgba(255,255,255,0.2);
+            height: 10px;
+            border-radius: 5px;
+            overflow: hidden;
+            margin-top: 5px;
+        }
+
+        .progress-fill {
+            background: #4CAF50;
+            height: 100%;
+            border-radius: 5px;
+            transition: width 0.3s;
         }
 
         /* Responsive */
@@ -313,7 +335,7 @@
     </div>
 
     <!-- Alert Notifikasi -->
-    <div class="alert alert-warning" id="globalAlert">
+    <div class="alert" id="globalAlert">
         <i class="fas fa-exclamation-triangle"></i>
         <span id="alertMessage"></span>
     </div>
@@ -334,17 +356,17 @@
             <div class="form-group">
                 <label for="permissionType">Jenis Izin</label>
                 <select id="permissionType">
-                    <option value="keluar">Keluar (15 menit)</option>
+                    <option value="keluar">Keluar (15 menit 59 detik)</option>
                     <option value="makan">Ambil Makan (7 menit)</option>
                 </select>
             </div>
             <div class="form-group">
                 <label>Sisa Izin: <span id="remainingPermissions">0</span>/4</label>
-                <div class="progress-bar" style="background: rgba(255,255,255,0.2); height: 10px; border-radius: 5px;">
-                    <div id="permissionProgress" style="background: #4CAF50; height: 100%; border-radius: 5px; width: 75%;"></div>
+                <div class="progress-bar">
+                    <div id="permissionProgress" class="progress-fill" style="width: 0%;"></div>
                 </div>
             </div>
-            <button class="btn btn-primary" onclick="requestPermission()" style="width: 100%;">
+            <button class="btn btn-primary" onclick="requestPermission()" style="width: 100%;" id="requestBtn">
                 <i class="fas fa-paper-plane"></i> AJUKAN IZIN
             </button>
         </div>
@@ -421,16 +443,13 @@
         </div>
     </div>
 
-    <!-- Script Firebase & Aplikasi -->
+    <!-- ========== SCRIPTS ========== -->
+    <!-- Firebase SDK (V9 Compat) -->
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
-    <!-- Tambahkan di bagian sebelum </body> -->
-    <script src="./js/auth-logic.js"></script>
-    <script src="./js/izin-logic.js"></script>
-    <script src="./js/admin-logic.js"></script>
-    <script src="./js/realtime-logic.js"></script>
-    
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+
+    <!-- Config Firebase (BUAT FILE TERPISAH nanti) -->
     <script>
         // ======================
         // KONFIGURASI FIREBASE
@@ -448,235 +467,317 @@
         const app = firebase.initializeApp(firebaseConfig);
         const db = firebase.firestore();
         const auth = firebase.auth();
+    </script>
 
+    <!-- File Logika (OPTIONAL - bisa pakai inline dulu) -->
+    <!--
+    <script src="./js/auth-logic.js"></script>
+    <script src="./js/izin-logic.js"></script>
+    <script src="./js/app.js"></script>
+    -->
+
+    <!-- MAIN APPLICATION LOGIC -->
+    <script>
         // ======================
         // VARIABEL GLOBAL
         // ======================
-        let currentStaff = null;
+        let currentUser = null;
         let currentPermissionId = null;
+        let permissionTimers = {};
         let permissionListeners = [];
-        let maxPermissionTime = {
-            'keluar': 15 * 60, // 15 menit dalam detik
-            'makan': 7 * 60    // 7 menit dalam detik
+        let staffData = [];
+
+        // Konstanta
+        const MAX_IZIN_PER_HARI = 4;
+        const DURASI_IZIN = {
+            'keluar': 959,    // 15 menit 59 detik
+            'makan': 420      // 7 menit
         };
 
         // ======================
-        // FUNGSI UTAMA
+        // FUNGSI UTAMA - INISIALISASI
         // ======================
-
-        /**
-         * FUNGSI 1: Inisialisasi Aplikasi
-         * Memuat semua data dan setup listener
-         */
-        function initApp() {
-            console.log("🎬 Memulai aplikasi...");
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log("🚀 Aplikasi Tracking Izin Staff dimulai...");
+            
+            // Update waktu real-time
             updateCurrentTime();
             
             // Setup Firebase Auth
-            auth.onAuthStateChanged((user) => {
+            auth.onAuthStateChanged(async (user) => {
                 if (user) {
-                    currentStaff = user.uid;
-                    loadStaffData();
+                    currentUser = user;
+                    console.log("✅ User logged in:", user.uid);
+                    await loadInitialData();
                     setupRealtimeListeners();
                 } else {
-                    // Login sebagai demo user
-                    auth.signInAnonymously();
+                    // Login anonim untuk demo (atau redirect ke login page)
+                    console.log("🔐 No user, trying anonymous login...");
+                    try {
+                        await auth.signInAnonymously();
+                    } catch (error) {
+                        console.error("Login error:", error);
+                    }
                 }
             });
 
-            // Load staff untuk dropdown
-            loadStaffForDropdown();
+            // Setup event listeners
+            setupEventListeners();
+        });
+
+        // ======================
+        // FUNGSI LOAD DATA
+        // ======================
+        async function loadInitialData() {
+            try {
+                // Load data staff
+                const staffSnapshot = await db.collection('staff').get();
+                staffData = [];
+                
+                staffSnapshot.forEach(doc => {
+                    staffData.push({
+                        id: doc.id,
+                        ...doc.data()
+                    });
+                });
+
+                // Update dropdown staff
+                updateStaffDropdown();
+                
+                // Load riwayat izin
+                loadPermissionsHistory();
+                
+                // Update status jobdesk
+                updateJobdeskStatus();
+                
+                console.log(`✅ Loaded ${staffData.length} staff members`);
+                
+            } catch (error) {
+                console.error("❌ Error loading initial data:", error);
+                showAlert("Error loading data: " + error.message, 'danger');
+            }
         }
 
-        /**
-         * FUNGSI 2: Update Waktu Real-Time
-         * Menampilkan jam terkini setiap detik
-         */
-        function updateCurrentTime() {
-            const now = new Date();
-            const timeString = now.toLocaleTimeString('id-ID');
-            document.getElementById('currentTime').textContent = timeString;
-            
-            // Cek reset shift (setiap 8 jam)
-            checkShiftReset();
-            
-            setTimeout(updateCurrentTime, 1000);
-        }
-
-        /**
-         * FUNGSI 3: Load Data Staff
-         * Mengambil data staff dari Firestore
-         */
-        function loadStaffData() {
-            db.collection('staff').get().then((snapshot) => {
-                console.log(`📊 Loaded ${snapshot.size} staff members`);
-                updateJobdeskStatus(snapshot);
-            }).catch((error) => {
-                console.error("❌ Error loading staff:", error);
-            });
-        }
-
-        /**
-         * FUNGSI 4: Setup Realtime Listeners
-         * Mendengarkan perubahan data real-time
-         */
+        // ======================
+        // FUNGSI REALTIME LISTENERS
+        // ======================
         function setupRealtimeListeners() {
+            // Cleanup listeners sebelumnya
+            cleanupListeners();
+            
             // Listener untuk izin aktif
-            const permissionListener = db.collection('permissions')
-                .where('returned', '==', false)
-                .orderBy('startTime', 'desc')
-                .onSnapshot((snapshot) => {
-                    updateOngoingPermissions(snapshot);
-                    updatePermissionsTable();
-                }, (error) => {
-                    console.error("❌ Permission listener error:", error);
+            const izinListener = db.collection('izin_logs')
+                .where('selesai', '==', false)
+                .onSnapshot(snapshot => {
+                    updateOngoingIzin(snapshot);
+                }, error => {
+                    console.error("Izin listener error:", error);
                 });
             
-            permissionListeners.push(permissionListener);
+            permissionListeners.push(izinListener);
+            
+            // Listener untuk semua izin (tabel)
+            const historyListener = db.collection('izin_logs')
+                .orderBy('waktuMulai', 'desc')
+                .limit(20)
+                .onSnapshot(snapshot => {
+                    updatePermissionsTable(snapshot);
+                }, error => {
+                    console.error("History listener error:", error);
+                });
+            
+            permissionListeners.push(historyListener);
         }
 
-        /**
-         * FUNGSI 5: Request Izin (CORE LOGIC)
-         * Validasi dan buat izin baru
-         */
-        function requestPermission() {
+        function cleanupListeners() {
+            permissionListeners.forEach(unsubscribe => unsubscribe());
+            permissionListeners = [];
+        }
+
+        // ======================
+        // FUNGSI CORE: REQUEST IZIN
+        // ======================
+        async function requestPermission() {
             const staffSelect = document.getElementById('staffSelect');
             const permissionType = document.getElementById('permissionType').value;
             const staffId = staffSelect.value;
             
             if (!staffId) {
-                showAlert('⚠️ Pilih staff terlebih dahulu!');
+                showAlert('⚠️ Pilih staff terlebih dahulu!', 'warning');
                 return;
             }
             
-            const staffRef = db.collection('staff').doc(staffId);
+            const requestBtn = document.getElementById('requestBtn');
+            const originalText = requestBtn.innerHTML;
             
-            // Transaction untuk validasi real-time
-            db.runTransaction(async (transaction) => {
-                const staffDoc = await transaction.get(staffRef);
+            try {
+                // Disable button selama proses
+                requestBtn.disabled = true;
+                requestBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
+                
+                // 1. Ambil data staff
+                const staffRef = db.collection('staff').doc(staffId);
+                const staffDoc = await staffRef.get();
                 
                 if (!staffDoc.exists) {
-                    throw new Error("Staff tidak ditemukan");
+                    throw new Error("Data staff tidak ditemukan");
                 }
                 
-                const staffData = staffDoc.data();
+                const staff = staffDoc.data();
                 
-                // ✅ VALIDASI 1: Maksimal 4x izin per shift
-                if (staffData.usedPermissions >= staffData.maxPermissions) {
-                    throw new Error(`Staff sudah mencapai batas maksimal ${staffData.maxPermissions} izin per shift`);
-                }
-                
-                // ✅ VALIDASI 2: Cek jobdesk kosong
-                const activePermissions = await db.collection('permissions')
-                    .where('jobdesk', '==', staffData.jobdesk)
-                    .where('returned', '==', false)
+                // 2. VALIDASI: Maksimal 4 izin per hari
+                const today = new Date().toISOString().split('T')[0];
+                const izinHariIni = await db.collection('izin_logs')
+                    .where('staffId', '==', staffId)
+                    .where('tanggal', '==', today)
                     .get();
                 
-                if (!activePermissions.empty) {
-                    throw new Error(`Jobdesk "${staffData.jobdesk}" sedang digunakan oleh staff lain`);
+                if (izinHariIni.size >= MAX_IZIN_PER_HARI) {
+                    throw new Error(`Staff sudah mencapai batas ${MAX_IZIN_PER_HARI}x izin hari ini`);
                 }
                 
-                // ✅ SEMUA VALIDASI LULUS: Buat izin baru
-                const startTime = firebase.firestore.Timestamp.now();
-                const newPermission = {
+                // 3. VALIDASI: Hanya 1 staff per jobdesk yang bisa izin
+                const izinAktifJobdesk = await db.collection('izin_logs')
+                    .where('jobdesk', '==', staff.jobdesk)
+                    .where('selesai', '==', false)
+                    .get();
+                
+                if (!izinAktifJobdesk.empty) {
+                    const izinAktif = izinAktifJobdesk.docs[0].data();
+                    throw new Error(`Jobdesk ${staff.jobdesk} sedang digunakan oleh ${izinAktif.nama}`);
+                }
+                
+                // 4. Buat izin baru
+                const waktuMulai = firebase.firestore.Timestamp.now();
+                const izinData = {
                     staffId: staffId,
-                    staffName: staffData.name,
-                    jobdesk: staffData.jobdesk,
+                    nama: staff.nama,
+                    jabatan: staff.jabatan,
+                    jobdesk: staff.jobdesk,
+                    waktuMulai: waktuMulai,
+                    waktuSelesai: null,
+                    durasi: DURASI_IZIN[permissionType],
+                    status: 'ACTIVE',
+                    tanggal: today,
                     type: permissionType,
-                    startTime: startTime,
-                    endTime: null,
-                    duration: 0,
-                    status: 'ongoing',
-                    returned: false,
-                    createdAt: startTime
+                    selesai: false
                 };
                 
-                // Update usedPermissions staff
-                transaction.update(staffRef, {
-                    usedPermissions: firebase.firestore.FieldValue.increment(1)
+                // Simpan ke database
+                const izinRef = await db.collection('izin_logs').add(izinData);
+                
+                // 5. Update counter izin harian staff
+                await staffRef.update({
+                    izinHariIni: firebase.firestore.FieldValue.increment(1),
+                    sedangIzin: true,
+                    izinAktifId: izinRef.id
                 });
                 
-                // Tambah permission baru
-                const permissionRef = db.collection('permissions').doc();
-                transaction.set(permissionRef, newPermission);
+                // 6. Update UI
+                showAlert(`✅ Izin berhasil dibuat untuk ${staff.nama}`, 'success');
                 
-                return permissionRef.id;
+                // 7. Start timer untuk izin
+                startIzinTimer(izinRef.id, permissionType);
                 
-            }).then((permissionId) => {
-                console.log(`✅ Izin berhasil dibuat: ${permissionId}`);
-                showAlert('🎉 Izin berhasil diajukan!', 'success');
+                // 8. Update dropdown
+                updateRemainingPermissions(staffId);
                 
-                // Auto-timer untuk monitoring
-                startPermissionTimer(permissionId, permissionType);
-                
-            }).catch((error) => {
+            } catch (error) {
                 console.error("❌ Error membuat izin:", error);
-                showAlert(`⛔ ${error.message}`);
-            });
+                showAlert(`⛔ ${error.message}`, 'danger');
+            } finally {
+                // Enable button kembali
+                requestBtn.disabled = false;
+                requestBtn.innerHTML = originalText;
+            }
         }
 
-        /**
-         * FUNGSI 6: Timer Monitoring Izin
-         * Hitung mundur dan cek keterlambatan
-         */
-        function startPermissionTimer(permissionId, permissionType) {
-            const maxTime = maxPermissionTime[permissionType];
-            let timeElapsed = 0;
+        // ======================
+        // FUNGSI TIMER IZIN
+        // ======================
+        function startIzinTimer(izinId, izinType) {
+            const maxTime = DURASI_IZIN[izinType];
+            let elapsedTime = 0;
             
-            const timerInterval = setInterval(() => {
-                timeElapsed++;
+            const timer = setInterval(() => {
+                elapsedTime++;
                 
-                // Cek jika sudah melewati batas waktu
-                if (timeElapsed > maxTime) {
-                    // Update status menjadi TELAT
-                    db.collection('permissions').doc(permissionId).update({
-                        status: 'late'
-                    });
-                    
-                    showAlert(`⚠️ ${permissionId}: Staff terlambat ${timeElapsed - maxTime} detik!`, 'warning');
+                // Update UI timer jika ada
+                const timerElement = document.querySelector(`[data-izin-id="${izinId}"] .izin-timer`);
+                if (timerElement) {
+                    const remaining = maxTime - elapsedTime;
+                    if (remaining > 0) {
+                        const minutes = Math.floor(remaining / 60);
+                        const seconds = remaining % 60;
+                        timerElement.textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+                        timerElement.style.color = remaining < 60 ? '#F44336' : '#FFA726';
+                    }
                 }
                 
-                // Auto-return setelah 30 menit (fallback)
-                if (timeElapsed > 30 * 60) {
-                    clearInterval(timerInterval);
-                    forceReturn(permissionId);
+                // Cek keterlambatan
+                if (elapsedTime > maxTime) {
+                    // Update status menjadi TELAT
+                    db.collection('izin_logs').doc(izinId).update({
+                        status: 'TELAT'
+                    });
+                    
+                    // Notifikasi
+                    const lateBy = elapsedTime - maxTime;
+                    if (lateBy === 60) { // Notifikasi setiap 1 menit keterlambatan
+                        showAlert(`⚠️ Izin terlambat ${Math.floor(lateBy/60)} menit`, 'warning');
+                    }
+                }
+                
+                // Auto return setelah 30 menit (safety mechanism)
+                if (elapsedTime > 30 * 60) {
+                    clearInterval(timer);
+                    autoReturnIzin(izinId);
                 }
                 
             }, 1000);
             
-            // Simpan interval ID untuk cleanup
-            permissionTimers[permissionId] = timerInterval;
+            // Simpan timer
+            permissionTimers[izinId] = timer;
         }
 
-        /**
-         * FUNGSI 7: Kembali dari Izin
-         * Update waktu kembali dan hitung durasi
-         */
-        function returnFromPermission(permissionId) {
-            currentPermissionId = permissionId;
+        // ======================
+        // FUNGSI KEMBALI DARI IZIN
+        // ======================
+        function returnFromPermission(izinId) {
+            currentPermissionId = izinId;
             
-            db.collection('permissions').doc(permissionId).get().then((doc) => {
-                if (!doc.exists) return;
+            db.collection('izin_logs').doc(izinId).get().then((doc) => {
+                if (!doc.exists) {
+                    showAlert("Data izin tidak ditemukan", 'danger');
+                    return;
+                }
                 
-                const permission = doc.data();
-                const startTime = permission.startTime.toDate();
+                const izin = doc.data();
+                const startTime = izin.waktuMulai.toDate();
                 const now = new Date();
-                const duration = Math.floor((now - startTime) / 1000); // dalam detik
+                const duration = Math.floor((now - startTime) / 1000);
                 
-                const maxTime = maxPermissionTime[permission.type];
-                const status = duration <= maxTime ? 'ontime' : 'late';
+                // Hitung status
+                let status = 'NORMAL';
+                let statusClass = 'badge-ontime';
+                let statusText = 'TEPAT WAKTU';
                 
-                // Tampilkan di modal
+                if (duration > izin.durasi) {
+                    status = 'TELAT';
+                    statusClass = 'badge-late';
+                    statusText = 'TELAT';
+                }
+                
+                // Tampilkan modal konfirmasi
                 document.getElementById('returnModalContent').innerHTML = `
                     <div class="form-group">
-                        <p><strong>Staff:</strong> ${permission.staffName}</p>
-                        <p><strong>Jobdesk:</strong> ${permission.jobdesk}</p>
-                        <p><strong>Jenis Izin:</strong> ${permission.type}</p>
-                        <p><strong>Mulai:</strong> ${startTime.toLocaleTimeString()}</p>
+                        <p><strong>Staff:</strong> ${izin.nama}</p>
+                        <p><strong>Jobdesk:</strong> ${izin.jobdesk}</p>
+                        <p><strong>Jenis Izin:</strong> ${izin.type === 'keluar' ? 'Keluar' : 'Makan'}</p>
+                        <p><strong>Mulai:</strong> ${formatTime(startTime)}</p>
                         <p><strong>Durasi:</strong> ${formatDuration(duration)}</p>
-                        <p><strong>Status:</strong> <span class="badge badge-${status}">
-                            ${status === 'ontime' ? 'TEPAT WAKTU' : 'TELAT'}
-                        </span></p>
+                        <p><strong>Batas:</strong> ${formatDuration(izin.durasi)}</p>
+                        <p><strong>Status:</strong> <span class="badge ${statusClass}">${statusText}</span></p>
                     </div>
                 `;
                 
@@ -684,258 +785,437 @@
                 
             }).catch((error) => {
                 console.error("Error loading permission:", error);
-                showAlert("Error loading permission data");
+                showAlert("Error loading permission data", 'danger');
             });
         }
 
-        /**
-         * FUNGSI 8: Konfirmasi Kembali
-         * Update database dengan waktu kembali
-         */
-        function confirmReturn() {
+        async function confirmReturn() {
             if (!currentPermissionId) return;
             
             const endTime = firebase.firestore.Timestamp.now();
             
-            db.collection('permissions').doc(currentPermissionId).get().then((doc) => {
-                const permission = doc.data();
-                const startTime = permission.startTime;
+            try {
+                const izinDoc = await db.collection('izin_logs').doc(currentPermissionId).get();
+                if (!izinDoc.exists) throw new Error("Izin tidak ditemukan");
+                
+                const izin = izinDoc.data();
+                const startTime = izin.waktuMulai;
                 const duration = Math.floor((endTime.toDate() - startTime.toDate()) / 1000);
-                const maxTime = maxPermissionTime[permission.type];
-                const status = duration <= maxTime ? 'ontime' : 'late';
                 
-                // Update permission
-                db.collection('permissions').doc(currentPermissionId).update({
-                    endTime: endTime,
-                    duration: duration,
+                // Tentukan status
+                const status = duration <= izin.durasi ? 'NORMAL' : 'TELAT';
+                
+                // Update izin
+                await db.collection('izin_logs').doc(currentPermissionId).update({
+                    waktuSelesai: endTime,
+                    durasi: duration,
                     status: status,
-                    returned: true
-                }).then(() => {
-                    showAlert('✅ Staff telah kembali dari izin', 'success');
-                    closeModal();
-                    
-                    // Cleanup timer
-                    if (permissionTimers[currentPermissionId]) {
-                        clearInterval(permissionTimers[currentPermissionId]);
-                        delete permissionTimers[currentPermissionId];
-                    }
+                    selesai: true
                 });
                 
-            }).catch((error) => {
+                // Update status staff
+                await db.collection('staff').doc(izin.staffId).update({
+                    sedangIzin: false,
+                    izinAktifId: null
+                });
+                
+                // Hapus timer
+                if (permissionTimers[currentPermissionId]) {
+                    clearInterval(permissionTimers[currentPermissionId]);
+                    delete permissionTimers[currentPermissionId];
+                }
+                
+                showAlert('✅ Staff telah kembali dari izin', 'success');
+                closeModal();
+                
+            } catch (error) {
                 console.error("Error confirming return:", error);
-                showAlert("Error confirming return");
+                showAlert("Error confirming return: " + error.message, 'danger');
+            }
+        }
+
+        // ======================
+        // FUNGSI UPDATE UI
+        // ======================
+        function updateStaffDropdown() {
+            const select = document.getElementById('staffSelect');
+            select.innerHTML = '<option value="">Pilih Staff</option>';
+            
+            staffData.forEach(staff => {
+                const option = document.createElement('option');
+                option.value = staff.id;
+                option.textContent = `${staff.nama} - ${staff.jobdesk}`;
+                
+                // Tambahkan data atribut untuk info izin
+                option.dataset.izinHariIni = staff.izinHariIni || 0;
+                option.dataset.sedangIzin = staff.sedangIzin || false;
+                
+                select.appendChild(option);
+            });
+            
+            // Event listener untuk update info izin saat staff dipilih
+            select.addEventListener('change', function() {
+                const selectedStaffId = this.value;
+                if (selectedStaffId) {
+                    updateRemainingPermissions(selectedStaffId);
+                }
             });
         }
 
-        /**
-         * FUNGSI 9: Update Tabel Izin
-         * Tampilkan riwayat izin dalam tabel
-         */
-        function updatePermissionsTable() {
-            db.collection('permissions')
-                .orderBy('startTime', 'desc')
-                .limit(50)
-                .get()
-                .then((snapshot) => {
-                    const tbody = document.getElementById('permissionsBody');
-                    tbody.innerHTML = '';
-                    
-                    snapshot.forEach((doc) => {
-                        const perm = doc.data();
-                        const startTime = perm.startTime.toDate();
-                        const endTime = perm.endTime ? perm.endTime.toDate() : null;
-                        
-                        const row = `
-                            <tr>
-                                <td>${perm.staffName}</td>
-                                <td>${perm.jobdesk}</td>
-                                <td>${perm.type === 'keluar' ? 'Keluar' : 'Ambil Makan'}</td>
-                                <td>${startTime.toLocaleTimeString()}</td>
-                                <td>${endTime ? endTime.toLocaleTimeString() : '--:--:--'}</td>
-                                <td>${formatDuration(perm.duration)}</td>
-                                <td>
-                                    <span class="badge badge-${perm.status}">
-                                        ${perm.status === 'ongoing' ? 'SEDANG IZIN' : 
-                                          perm.status === 'ontime' ? 'TEPAT WAKTI' : 'TELAT'}
-                                    </span>
-                                </td>
-                                <td>
-                                    ${!perm.returned ? 
-                                        `<button class="btn btn-secondary" onclick="returnFromPermission('${doc.id}')">
-                                            <i class="fas fa-sign-in-alt"></i> Kembali
-                                        </button>` 
-                                        : '<i class="fas fa-check" style="color:#4CAF50"></i> Selesai'
-                                    }
-                                </td>
-                            </tr>
-                        `;
-                        tbody.innerHTML += row;
-                    });
-                    
-                }).catch((error) => {
-                    console.error("Error loading permissions:", error);
-                });
+        function updateRemainingPermissions(staffId) {
+            const staff = staffData.find(s => s.id === staffId);
+            if (!staff) return;
+            
+            const used = staff.izinHariIni || 0;
+            const remaining = MAX_IZIN_PER_HARI - used;
+            
+            document.getElementById('remainingPermissions').textContent = remaining;
+            
+            // Update progress bar
+            const progressPercent = (used / MAX_IZIN_PER_HARI) * 100;
+            document.getElementById('permissionProgress').style.width = `${progressPercent}%`;
+            
+            // Update button status
+            const requestBtn = document.getElementById('requestBtn');
+            if (remaining <= 0) {
+                requestBtn.disabled = true;
+                requestBtn.innerHTML = '<i class="fas fa-ban"></i> BATAS IZIN';
+            } else if (staff.sedangIzin) {
+                requestBtn.disabled = true;
+                requestBtn.innerHTML = '<i class="fas fa-user-clock"></i> SEDANG IZIN';
+            } else {
+                requestBtn.disabled = false;
+                requestBtn.innerHTML = '<i class="fas fa-paper-plane"></i> AJUKAN IZIN';
+            }
         }
 
-        /**
-         * FUNGSI 10: Update Status Jobdesk
-         * Tampilkan jobdesk yang kosong/sibuk
-         */
-        function updateJobdeskStatus(staffSnapshot) {
-            const jobdeskStatusDiv = document.getElementById('jobdeskStatus');
+        function updateOngoingIzin(snapshot) {
+            const ongoingList = document.getElementById('ongoingList');
+            const ongoingCount = document.getElementById('ongoingCount');
+            
+            if (snapshot.empty) {
+                ongoingList.innerHTML = '<p style="text-align: center; padding: 20px; opacity: 0.7;">Tidak ada staff yang sedang izin</p>';
+                ongoingCount.textContent = '0';
+                return;
+            }
+            
             let html = '';
-            
-            // Ambil semua jobdesk unik
-            const jobdesks = [];
-            staffSnapshot.forEach(doc => {
-                const staff = doc.data();
-                if (!jobdesks.includes(staff.jobdesk)) {
-                    jobdesks.push(staff.jobdesk);
-                }
-            });
-            
-            // Cek status setiap jobdesk
-            jobdesks.forEach(jobdesk => {
-                db.collection('permissions')
-                    .where('jobdesk', '==', jobdesk)
-                    .where('returned', '==', false)
-                    .get()
-                    .then((permissionSnapshot) => {
-                        const isBusy = !permissionSnapshot.empty;
-                        const busyText = isBusy ? 
-                            `<span style="color:#F44336"><i class="fas fa-user-clock"></i> SIBUK</span>` : 
-                            `<span style="color:#4CAF50"><i class="fas fa-check-circle"></i> KOSONG</span>`;
-                        
-                        const jobdeskItem = `
-                            <div class="jobdesk-item ${isBusy ? 'jobdesk-busy' : 'jobdesk-available'}">
-                                <div>
-                                    <strong>${jobdesk}</strong><br>
-                                    <small>${permissionSnapshot.size} staff izin</small>
-                                </div>
-                                <div>${busyText}</div>
+            snapshot.forEach(doc => {
+                const izin = doc.data();
+                const startTime = izin.waktuMulai.toDate();
+                const now = new Date();
+                const elapsed = Math.floor((now - startTime) / 1000);
+                const remaining = Math.max(0, izin.durasi - elapsed);
+                
+                const minutes = Math.floor(remaining / 60);
+                const seconds = remaining % 60;
+                
+                html += `
+                    <div class="jobdesk-item ${remaining < 60 ? 'jobdesk-busy' : 'jobdesk-available'}" data-izin-id="${doc.id}">
+                        <div>
+                            <strong>${izin.nama}</strong><br>
+                            <small>${izin.jobdesk} • ${izin.type === 'keluar' ? 'Keluar' : 'Makan'}</small>
+                        </div>
+                        <div>
+                            <div class="izin-timer" style="font-family: 'Courier New'; font-weight: bold; color: ${remaining < 60 ? '#F44336' : '#FFA726'}">
+                                ${minutes}:${seconds.toString().padStart(2, '0')}
                             </div>
-                        `;
-                        
-                        html += jobdeskItem;
-                        jobdeskStatusDiv.innerHTML = html;
-                    });
+                            <small>${formatTime(startTime)}</small>
+                        </div>
+                    </div>
+                `;
             });
+            
+            ongoingList.innerHTML = html;
+            ongoingCount.textContent = snapshot.size;
         }
 
-        /**
-         * FUNGSI 11: Reset Shift Otomatis
-         * Reset counter izin setiap shift selesai
-         */
-        function checkShiftReset() {
-            const now = new Date();
-            const currentHour = now.getHours();
+        function updatePermissionsTable(snapshot) {
+            const tbody = document.getElementById('permissionsBody');
+            tbody.innerHTML = '';
             
-            // Shift pattern: 00-08, 08-16, 16-24
-            const shiftEndHours = [8, 16, 24];
+            if (snapshot.empty) {
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="8" style="text-align: center; padding: 20px; opacity: 0.7;">
+                            Belum ada riwayat izin hari ini
+                        </td>
+                    </tr>
+                `;
+                return;
+            }
             
-            shiftEndHours.forEach(hour => {
-                if (currentHour === hour) {
-                    resetAllPermissions();
+            snapshot.forEach(doc => {
+                const izin = doc.data();
+                const startTime = izin.waktuMulai.toDate();
+                const endTime = izin.waktuSelesai ? izin.waktuSelesai.toDate() : null;
+                
+                // Tentukan badge class
+                let badgeClass = 'badge-ontime';
+                let statusText = 'NORMAL';
+                
+                if (izin.status === 'TELAT') {
+                    badgeClass = 'badge-late';
+                    statusText = 'TELAT';
+                } else if (izin.status === 'ACTIVE') {
+                    badgeClass = 'badge-ongoing';
+                    statusText = 'SEDANG IZIN';
                 }
+                
+                const row = `
+                    <tr>
+                        <td>${izin.nama}</td>
+                        <td>${izin.jobdesk}</td>
+                        <td>${izin.type === 'keluar' ? 'Keluar' : 'Makan'}</td>
+                        <td>${formatTime(startTime)}</td>
+                        <td>${endTime ? formatTime(endTime) : '--:--:--'}</td>
+                        <td>${formatDuration(izin.durasi)}</td>
+                        <td>
+                            <span class="badge ${badgeClass}">
+                                ${statusText}
+                            </span>
+                        </td>
+                        <td>
+                            ${!izin.selesai ? 
+                                `<button class="btn btn-secondary" onclick="returnFromPermission('${doc.id}')">
+                                    <i class="fas fa-sign-in-alt"></i> Kembali
+                                </button>` 
+                                : '<i class="fas fa-check" style="color:#4CAF50"></i> Selesai'
+                            }
+                        </td>
+                    </tr>
+                `;
+                tbody.innerHTML += row;
             });
         }
 
-        /**
-         * FUNGSI 12: Reset Semua Izin
-         * Set usedPermissions kembali ke 0
-         */
-        function resetAllPermissions() {
-            console.log("🔄 Resetting permissions for new shift...");
+        async function updateJobdeskStatus() {
+            const jobdeskStatusDiv = document.getElementById('jobdeskStatus');
             
-            db.collection('staff').get().then((snapshot) => {
-                const batch = db.batch();
-                
-                snapshot.forEach((doc) => {
-                    batch.update(doc.ref, { usedPermissions: 0 });
-                });
-                
-                return batch.commit();
-            }).then(() => {
-                console.log("✅ All permissions reset");
-                showAlert('🔄 Shift baru dimulai! Counter izin direset.', 'info');
-            }).catch((error) => {
-                console.error("Error resetting permissions:", error);
+            // Kelompokkan staff by jobdesk
+            const jobdeskMap = {};
+            
+            staffData.forEach(staff => {
+                if (!jobdeskMap[staff.jobdesk]) {
+                    jobdeskMap[staff.jobdesk] = {
+                        total: 0,
+                        sedangIzin: 0,
+                        staffList: []
+                    };
+                }
+                jobdeskMap[staff.jobdesk].total++;
+                jobdeskMap[staff.jobdesk].staffList.push(staff);
             });
+            
+            // Cek setiap jobdesk
+            let html = '';
+            for (const [jobdeskName, jobdeskInfo] of Object.entries(jobdeskMap)) {
+                // Cek ada staff yang sedang izin di jobdesk ini
+                const izinAktif = await db.collection('izin_logs')
+                    .where('jobdesk', '==', jobdeskName)
+                    .where('selesai', '==', false)
+                    .get();
+                
+                const isBusy = !izinAktif.empty;
+                const busyCount = izinAktif.size;
+                
+                html += `
+                    <div class="jobdesk-item ${isBusy ? 'jobdesk-busy' : 'jobdesk-available'}">
+                        <div>
+                            <strong>${jobdeskName}</strong><br>
+                            <small>${jobdeskInfo.total} staff • ${busyCount} izin</small>
+                        </div>
+                        <div>
+                            ${isBusy ? 
+                                `<span style="color:#F44336"><i class="fas fa-user-clock"></i> SIBUK</span>` : 
+                                `<span style="color:#4CAF50"><i class="fas fa-check-circle"></i> KOSONG</span>`
+                            }
+                        </div>
+                    </div>
+                `;
+            }
+            
+            jobdeskStatusDiv.innerHTML = html || '<p style="text-align: center; padding: 20px; opacity: 0.7;">Tidak ada data jobdesk</p>';
         }
 
         // ======================
         // FUNGSI HELPER
         // ======================
-        
+        function updateCurrentTime() {
+            const now = new Date();
+            const timeString = now.toLocaleTimeString('id-ID');
+            document.getElementById('currentTime').textContent = timeString;
+            
+            // Tentukan shift
+            const hour = now.getHours();
+            let shiftText = '';
+            
+            if (hour >= 6 && hour < 14) {
+                shiftText = 'Shift Pagi (06:00-14:00)';
+            } else if (hour >= 14 && hour < 22) {
+                shiftText = 'Shift Sore (14:00-22:00)';
+            } else {
+                shiftText = 'Shift Malam (22:00-06:00)';
+            }
+            
+            document.getElementById('currentShift').textContent = shiftText;
+            
+            // Update setiap detik
+            setTimeout(updateCurrentTime, 1000);
+        }
+
         function showAlert(message, type = 'warning') {
             const alertDiv = document.getElementById('globalAlert');
             const alertMessage = document.getElementById('alertMessage');
             
             alertMessage.textContent = message;
-            alertDiv.style.display = 'block';
             alertDiv.className = `alert alert-${type}`;
+            alertDiv.style.display = 'block';
             
+            // Auto hide setelah 5 detik
             setTimeout(() => {
                 alertDiv.style.display = 'none';
             }, 5000);
         }
-        
+
         function closeModal() {
             document.getElementById('returnModal').style.display = 'none';
             currentPermissionId = null;
         }
-        
+
+        function formatTime(date) {
+            if (!date) return '--:--:--';
+            return date.toLocaleTimeString('id-ID', {
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            });
+        }
+
         function formatDuration(seconds) {
-            if (!seconds) return '0 detik';
-            const mins = Math.floor(seconds / 60);
+            if (!seconds) return '0s';
+            const minutes = Math.floor(seconds / 60);
             const secs = seconds % 60;
-            return `${mins}m ${secs}s`;
+            return `${minutes}m ${secs}s`;
         }
-        
-        function loadStaffForDropdown() {
-            db.collection('staff').get().then((snapshot) => {
-                const select = document.getElementById('staffSelect');
-                select.innerHTML = '<option value="">Pilih Staff</option>';
-                
-                snapshot.forEach((doc) => {
-                    const staff = doc.data();
-                    const option = document.createElement('option');
-                    option.value = doc.id;
-                    option.textContent = `${staff.name} (${staff.jobdesk}) - ${staff.usedPermissions}/4`;
-                    select.appendChild(option);
+
+        function setupEventListeners() {
+            // Event listener untuk form submission
+            const staffSelect = document.getElementById('staffSelect');
+            if (staffSelect) {
+                staffSelect.addEventListener('change', function() {
+                    const selectedId = this.value;
+                    if (selectedId) {
+                        updateRemainingPermissions(selectedId);
+                    }
                 });
+            }
+            
+            // Event listener untuk type change
+            const typeSelect = document.getElementById('permissionType');
+            if (typeSelect) {
+                typeSelect.addEventListener('change', function() {
+                    // Bisa tambahkan logika jika diperlukan
+                });
+            }
+            
+            // Close modal dengan ESC
+            document.addEventListener('keydown', function(e) {
+                if (e.key === 'Escape') {
+                    closeModal();
+                }
             });
         }
 
-        // ======================
-        // INISIALISASI APLIKASI
-        // ======================
-        document.addEventListener('DOMContentLoaded', initApp);
-        
-        // Variabel untuk timer
-        const permissionTimers = {};
-        
-        // Demo data untuk testing
-        function createDemoData() {
-            // Hanya dijalankan jika database kosong
-            console.log("Creating demo data...");
-            
-            const demoStaff = [
-                { id: "staff001", name: "Budi Santoso", position: "Operator", jobdesk: "Mesin 1", maxPermissions: 4, usedPermissions: 2 },
-                { id: "staff002", name: "Siti Aisyah", position: "Operator", jobdesk: "Mesin 2", maxPermissions: 4, usedPermissions: 1 },
-                { id: "staff003", name: "Ahmad Rizki", position: "Supervisor", jobdesk: "Quality Check", maxPermissions: 4, usedPermissions: 3 },
-                { id: "staff004", name: "Dewi Lestari", position: "Operator", jobdesk: "Packaging", maxPermissions: 4, usedPermissions: 0 }
-            ];
-            
-            demoStaff.forEach(staff => {
-                db.collection('staff').doc(staff.id).set(staff);
-            });
-            
-            console.log("Demo data created!");
+        async function loadPermissionsHistory() {
+            try {
+                const today = new Date().toISOString().split('T')[0];
+                const snapshot = await db.collection('izin_logs')
+                    .where('tanggal', '==', today)
+                    .orderBy('waktuMulai', 'desc')
+                    .limit(20)
+                    .get();
+                
+                updatePermissionsTable(snapshot);
+            } catch (error) {
+                console.error("Error loading history:", error);
+            }
         }
 
-        // Uncomment untuk membuat data demo
-        // createDemoData();
+        function autoReturnIzin(izinId) {
+            console.log(`Auto-return izin ${izinId} after 30 minutes`);
+            // Implementasi auto return jika diperlukan
+        }
+
+        // ======================
+        // INISIALISASI DATA DEMO
+        // ======================
+        async function initDemoData() {
+            // Cek apakah database kosong
+            const staffCount = await db.collection('staff').count().get();
+            
+            if (staffCount.data().count === 0) {
+                console.log("📦 Creating demo data...");
+                
+                const demoStaff = [
+                    {
+                        nama: "Budi Santoso",
+                        jabatan: "Operator",
+                        jobdesk: "Mesin 1",
+                        shiftMulai: "08:00",
+                        shiftSelesai: "16:00",
+                        statusLogin: true,
+                        izinHariIni: 2,
+                        role: "staff",
+                        sedangIzin: false
+                    },
+                    {
+                        nama: "Siti Aisyah",
+                        jabatan: "Operator",
+                        jobdesk: "Mesin 2",
+                        shiftMulai: "08:00",
+                        shiftSelesai: "16:00",
+                        statusLogin: true,
+                        izinHariIni: 1,
+                        role: "staff",
+                        sedangIzin: false
+                    },
+                    {
+                        nama: "Ahmad Rizki",
+                        jabatan: "Supervisor",
+                        jobdesk: "Quality Check",
+                        shiftMulai: "14:00",
+                        shiftSelesai: "22:00",
+                        statusLogin: true,
+                        izinHariIni: 3,
+                        role: "admin",
+                        sedangIzin: false
+                    },
+                    {
+                        nama: "Dewi Lestari",
+                        jabatan: "Operator",
+                        jobdesk: "Packaging",
+                        shiftMulai: "22:00",
+                        shiftSelesai: "06:00",
+                        statusLogin: false,
+                        izinHariIni: 0,
+                        role: "staff",
+                        sedangIzin: false
+                    }
+                ];
+                
+                // Tambahkan staff ke Firestore
+                for (const staff of demoStaff) {
+                    await db.collection('staff').add(staff);
+                }
+                
+                console.log("✅ Demo data created successfully");
+                showAlert("Demo data telah dibuat. Silakan refresh halaman.", 'success');
+            }
+        }
+
+        // Uncomment baris berikut untuk membuat data demo (hati-hati!)
+        // initDemoData();
     </script>
 </body>
 </html>
